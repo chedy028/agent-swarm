@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Dependencies
+node_modules/
+
+# Swarm runtime state
+.autobot/active-tasks.json
+.autobot/check.lock
+.autobot/retries/
+.autobot/task-history.jsonl
+
+# Build/test artifacts
+dist/
+coverage/
+*.log
+
+# OS artifacts
+.DS_Store

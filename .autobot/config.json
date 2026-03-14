@@ -1,0 +1,21 @@
+{
+  "repoPath": "/Users/chendongkai/Desktop/Project/eng standard hub",
+  "worktreeRoot": "/Users/chendongkai/Desktop/Project/eng standard hub/.worktrees",
+  "mainBranch": "master",
+  "installCommand": "",
+  "allowedAgents": ["codex", "claude"],
+  "agentLaunchCommands": {
+    "codex": "codex --model gpt-5.3-codex -c \"model_reasoning_effort=high\" --dangerously-bypass-approvals-and-sandbox \"{prompt}\"",
+    "claude": "env ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY\" claude --model opus --dangerously-skip-permissions -p \"{prompt}\""
+  },
+  "reviewerBotLogins": ["codex-reviewer[bot]", "claude-reviewer[bot]", "gemini-reviewer[bot]"],
+  "requiredApprovals": 2,
+  "uiPathGlobs": ["src/**/*.tsx", "src/**/*.jsx", "src/**/*.css", "apps/**/src/**/*.tsx", "packages/**/src/**/*.tsx"],
+  "criticalTagPattern": "\\[critical\\]",
+  "maxRetries": 3,
+  "pollIntervalMinutes": 10,
+  "registryPath": ".autobot/active-tasks.json",
+  "historyPath": ".autobot/task-history.jsonl",
+  "retryDir": ".autobot/retries",
+  "lockPath": ".autobot/check.lock"
+}

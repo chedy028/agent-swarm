@@ -16,6 +16,7 @@ pnpm install
 - `repoPath`
 - `worktreeRoot`
 - `agentLaunchCommands`
+- `uiAgent` (set to `gemini` to route UI tasks)
 - `reviewerBotLogins`
 
 3. Ensure GitHub CLI auth:
@@ -28,12 +29,17 @@ gh auth status
 
 ```bash
 pnpm zoe spawn --id feat-custom-templates --agent codex --description "Custom email templates" --prompt-file /abs/path/prompt.md
+pnpm zoe spawn --id ui-polish-1 --agent ui --description "UI polish pass" --prompt-file /abs/path/prompt.md
 pnpm zoe check
 pnpm zoe status
 pnpm zoe status --json
 pnpm zoe retry --task-id feat-custom-templates --reason "fix failed CI"
 pnpm zoe cleanup --dry-run
 ```
+
+`--agent ui` routes to `config.uiAgent` (defaults to `gemini`).
+
+If you use Gemini tasks, ensure Gemini CLI is installed and `GEMINI_API_KEY` is set in your shell environment.
 
 Bash wrappers:
 

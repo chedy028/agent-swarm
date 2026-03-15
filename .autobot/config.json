@@ -3,11 +3,13 @@
   "worktreeRoot": "/Users/chendongkai/Desktop/Project/eng standard hub/.worktrees",
   "mainBranch": "master",
   "installCommand": "",
-  "allowedAgents": ["codex", "claude"],
+  "allowedAgents": ["codex", "claude", "gemini"],
   "agentLaunchCommands": {
     "codex": "codex --model gpt-5.3-codex -c \"model_reasoning_effort=high\" --dangerously-bypass-approvals-and-sandbox \"{prompt}\"",
-    "claude": "env ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY\" claude --model opus --dangerously-skip-permissions -p \"{prompt}\""
+    "claude": "env ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY\" claude --model opus --dangerously-skip-permissions -p \"{prompt}\"",
+    "gemini": "env GEMINI_API_KEY=\"$GEMINI_API_KEY\" gemini \"{prompt}\""
   },
+  "uiAgent": "gemini",
   "reviewerBotLogins": ["codex-reviewer[bot]", "claude-reviewer[bot]", "gemini-reviewer[bot]"],
   "requiredApprovals": 2,
   "uiPathGlobs": ["src/**/*.tsx", "src/**/*.jsx", "src/**/*.css", "apps/**/src/**/*.tsx", "packages/**/src/**/*.tsx"],

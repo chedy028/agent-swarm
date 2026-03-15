@@ -51,6 +51,7 @@ function toBool(value: string | boolean | undefined): boolean {
 function printHelp(): void {
   console.log(`zoe commands:
   zoe spawn --id --agent --description --prompt-file [--config]
+    (tip: --agent ui routes to config.uiAgent, default gemini)
   zoe check [--task-id] [--config]
   zoe status [--task-id] [--json] [--config]
   zoe retry --task-id --reason [--delta-file] [--config]
@@ -71,9 +72,12 @@ async function main(): Promise<void> {
   const runner = new DefaultCommandRunner();
 
   if (command === 'spawn') {
+    const requestedAgent = getFlag(parsed.flags, 'agent') ?? '';
+    const resolvedAgent =
+      requestedAgent === 'ui' ? (config.uiAgent && config.uiAgent.trim() !== '' ? config.uiAgent : 'gemini') : requestedAgent;
     const result = await spawnTask(config, runner, {
       id: getFlag(parsed.flags, 'id') ?? '',
-      agent: getFlag(parsed.flags, 'agent') ?? '',
+      agent: resolvedAgent,
       description: getFlag(parsed.flags, 'description') ?? '',
       promptFile: getFlag(parsed.flags, 'prompt-file') ?? ''
     });

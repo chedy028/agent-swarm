@@ -47,6 +47,7 @@ export async function loadConfig(configPath = DEFAULT_CONFIG_PATH): Promise<ZoeC
     installCommand: typeof parsed.installCommand === 'string' ? parsed.installCommand : undefined,
     allowedAgents: mustStringArray(parsed.allowedAgents, 'allowedAgents'),
     agentLaunchCommands: mustStringMap(parsed.agentLaunchCommands, 'agentLaunchCommands'),
+    uiAgent: typeof parsed.uiAgent === 'string' && parsed.uiAgent.trim() !== '' ? parsed.uiAgent : undefined,
     reviewerBotLogins: mustStringArray(parsed.reviewerBotLogins, 'reviewerBotLogins'),
     requiredApprovals: mustNumber(parsed.requiredApprovals, 'requiredApprovals'),
     uiPathGlobs: mustStringArray(parsed.uiPathGlobs, 'uiPathGlobs'),

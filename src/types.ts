@@ -75,6 +75,7 @@ export interface ZoeConfig {
   installCommand?: string;
   allowedAgents: string[];
   agentLaunchCommands: Record<string, string>;
+  uiAgent?: string;
   reviewerBotLogins: string[];
   requiredApprovals: number;
   uiPathGlobs: string[];

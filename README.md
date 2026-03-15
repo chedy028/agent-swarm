@@ -32,11 +32,15 @@ pnpm zoe spawn --id feat-custom-templates --description "Custom email templates"
 pnpm zoe check
 pnpm zoe status
 pnpm zoe status --json
+pnpm zoe finding-add --task-id feat-custom-templates --artifact-id eq-17 --verdict needs_fix --note "Sign error in numerator" --page 12
+pnpm zoe findings --task-id feat-custom-templates --open-only
+pnpm zoe finding-resolve --id <finding-id> --note "Fixed in PR #123"
 pnpm zoe retry --task-id feat-custom-templates --reason "fix failed CI"
 pnpm zoe cleanup --dry-run
 ```
 
 `spawn` is strict trio mode and always launches `codex`, `gemini`, and `claude` child tasks.
+`finding-add/findings/finding-resolve` power the human verification loop. Open findings are injected into retry deltas so agents can fix known issues and preserve known-correct lines.
 
 If you use Gemini tasks, ensure Gemini CLI is installed and `GEMINI_API_KEY` is set in your shell environment.
 

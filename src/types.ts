@@ -96,6 +96,7 @@ export interface ZoeConfig {
   pollIntervalMinutes: number;
   registryPath: string;
   historyPath: string;
+  findingLogPath: string;
   retryDir: string;
   lockPath: string;
 }

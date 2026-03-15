@@ -25,6 +25,7 @@ function makeConfig(overrides: Partial<Record<string, unknown>> = {}): Record<st
     pollIntervalMinutes: 10,
     registryPath: '.autobot/active-tasks.json',
     historyPath: '.autobot/task-history.jsonl',
+    findingLogPath: '.autobot/review-findings.jsonl',
     retryDir: '.autobot/retries',
     lockPath: '.autobot/check.lock',
     ...overrides

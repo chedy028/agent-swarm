@@ -9,6 +9,7 @@ node_modules/
 .autobot/check.lock
 .autobot/retries/
 .autobot/task-history.jsonl
+.autobot/review-findings.jsonl
 
 # Build/test artifacts
 dist/

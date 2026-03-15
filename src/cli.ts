@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { loadConfig } from './config.js';
+import { addFinding, listFindings, resolveFinding } from './findings.js';
 import { withFileLock } from './lock.js';
 import { cleanupTasks, getStatus, retryTask, spawnTask, checkTasks } from './orchestrator.js';
 import { DefaultCommandRunner } from './shell.js';
@@ -48,11 +49,26 @@ function toBool(value: string | boolean | undefined): boolean {
   return false;
 }
 
+function getIntFlag(flags: Record<string, string | boolean>, key: string): number | undefined {
+  const raw = getFlag(flags, key);
+  if (!raw) {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`${key} must be an integer`);
+  }
+  return parsed;
+}
+
 function printHelp(): void {
   console.log(`zoe commands:
   zoe spawn --id --description --prompt-file [--config]
   zoe check [--task-id] [--config]
   zoe status [--task-id] [--json] [--config]
+  zoe finding-add --verdict --note [--task-id --artifact-id --file --line-start --line-end --page --fingerprint] [--config]
+  zoe findings [--task-id] [--open-only] [--json] [--config]
+  zoe finding-resolve --id --note [--config]
   zoe retry --task-id --reason [--delta-file] [--config]
   zoe cleanup [--dry-run] [--config]`);
 }
@@ -137,6 +153,88 @@ async function main(): Promise<void> {
     for (const message of result.messages) {
       console.log(message);
     }
+    return;
+  }
+
+  if (command === 'finding-add') {
+    const verdict = getFlag(parsed.flags, 'verdict');
+    if (!verdict) {
+      throw new Error('finding-add requires --verdict');
+    }
+
+    const note = getFlag(parsed.flags, 'note');
+    if (!note) {
+      throw new Error('finding-add requires --note');
+    }
+
+    const finding = await addFinding(config.findingLogPath, {
+      taskId: getFlag(parsed.flags, 'task-id'),
+      artifactId: getFlag(parsed.flags, 'artifact-id'),
+      filePath: getFlag(parsed.flags, 'file'),
+      lineStart: getIntFlag(parsed.flags, 'line-start') ?? getIntFlag(parsed.flags, 'line'),
+      lineEnd: getIntFlag(parsed.flags, 'line-end'),
+      page: getIntFlag(parsed.flags, 'page'),
+      sourceRegionFingerprint: getFlag(parsed.flags, 'fingerprint'),
+      verdict: verdict as 'correct' | 'incorrect' | 'needs_fix' | 'improvement',
+      note
+    });
+
+    if (toBool(parsed.flags.json)) {
+      console.log(JSON.stringify(finding, null, 2));
+      return;
+    }
+
+    console.log(`finding_added:${finding.id}`);
+    return;
+  }
+
+  if (command === 'findings') {
+    const findings = await listFindings(config.findingLogPath, {
+      taskId: getFlag(parsed.flags, 'task-id'),
+      openOnly: toBool(parsed.flags['open-only'])
+    });
+
+    if (toBool(parsed.flags.json)) {
+      console.log(JSON.stringify(findings, null, 2));
+      return;
+    }
+
+    if (findings.length === 0) {
+      console.log('no_findings');
+      return;
+    }
+
+    for (const finding of findings) {
+      console.log(
+        [
+          `id=${finding.id}`,
+          `status=${finding.status}`,
+          `verdict=${finding.verdict}`,
+          `task=${finding.taskId ?? '-'}`,
+          `artifact=${finding.artifactId ?? '-'}`,
+          `file=${finding.filePath ?? '-'}`,
+          `line=${finding.lineStart ?? '-'}`,
+          `note=${finding.note}`
+        ].join(' | ')
+      );
+    }
+    return;
+  }
+
+  if (command === 'finding-resolve') {
+    const id = getFlag(parsed.flags, 'id');
+    const note = getFlag(parsed.flags, 'note');
+    if (!id || !note) {
+      throw new Error('finding-resolve requires --id and --note');
+    }
+
+    const finding = await resolveFinding(config.findingLogPath, id, note);
+    if (toBool(parsed.flags.json)) {
+      console.log(JSON.stringify(finding, null, 2));
+      return;
+    }
+
+    console.log(`finding_resolved:${finding.id}`);
     return;
   }
 

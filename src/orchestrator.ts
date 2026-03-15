@@ -1,6 +1,7 @@
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { classifyCiState, evaluatePullRequestGate, summarizeReviews } from './gates.js';
+import { renderOpenFindingsForTask } from './findings.js';
 import { findPrByBranch, getPrChecks, getPrView, isPrMerged, shellEscape } from './gh.js';
 import { computeRetryOutcome, isTerminalStatus } from './state.js';
 import { appendHistory, getTask, loadRegistry, saveRegistry } from './store.js';
@@ -176,6 +177,7 @@ async function writeRetryDelta(
 ): Promise<string> {
   await mkdir(config.retryDir, { recursive: true });
   const deltaPath = path.join(config.retryDir, `${taskId}-retry-${attempt}.md`);
+  const openFindings = await renderOpenFindingsForTask(config.findingLogPath, taskId, 20);
   const contents = [
     '# Retry Delta',
     '',
@@ -186,8 +188,12 @@ async function writeRetryDelta(
     'Constrain edits to files directly related to this failure.',
     'Run relevant tests/checks before updating the PR.'
   ].join('\n');
+  const findingsBlock =
+    openFindings.length === 0
+      ? ''
+      : `\n\n## Human Verification Log (Open Findings)\n${openFindings.join('\n')}\n\nPlease address incorrect/needs_fix findings and preserve lines marked correct.`;
 
-  await writeFile(deltaPath, `${contents}\n`, 'utf8');
+  await writeFile(deltaPath, `${contents}${findingsBlock}\n`, 'utf8');
   return deltaPath;
 }
 
@@ -204,9 +210,10 @@ async function createChildTask(
   const worktree = worktreeFor(config, parentId, agent);
   const tmuxSession = sessionFor(parentId, agent);
   const id = childIdFor(parentId, agent);
+  const baseRef = await resolveWorktreeBaseRef(config, runner);
 
   await runner.run(
-    `git -C ${shellEscape(config.repoPath)} worktree add ${shellEscape(worktree)} -b ${shellEscape(branch)} ${shellEscape(`origin/${config.mainBranch}`)}`
+    `git -C ${shellEscape(config.repoPath)} worktree add ${shellEscape(worktree)} -b ${shellEscape(branch)} ${shellEscape(baseRef)}`
   );
 
   if (config.installCommand && config.installCommand.trim() !== '') {
@@ -233,6 +240,21 @@ async function createChildTask(
 
   await launchAgentSession(config, runner, task);
   return task;
+}
+
+async function resolveWorktreeBaseRef(config: ZoeConfig, runner: CommandRunner): Promise<string> {
+  // Prefer the local main branch so child worktrees inherit unpushed local commits.
+  const localBranchRef = `refs/heads/${config.mainBranch}`;
+  const localBranch = await runner.run(
+    `git -C ${shellEscape(config.repoPath)} rev-parse --verify ${shellEscape(localBranchRef)}`,
+    { allowFailure: true }
+  );
+
+  if (localBranch.exitCode === 0) {
+    return config.mainBranch;
+  }
+
+  return `origin/${config.mainBranch}`;
 }
 
 function validateSpawnInput(input: SpawnInput): void {
@@ -347,29 +369,32 @@ async function checkSingleChildTask(
     return { changed: false, task: nextTask };
   }
 
-  const sessionAlive = await isSessionAlive(runner, nextTask.tmuxSession);
-  if (!sessionAlive) {
-    return await handleActionableFailure(config, runner, nextTask, 'session_died', 'tmux session not found');
-  }
-
   let pr = nextTask.pr;
   if (!pr) {
     const listed = await findPrByBranch(runner, nextTask.branch, config.repoPath);
-    if (!listed) {
-      nextTask = setTaskStatus(nextTask, 'running', 'Waiting for PR creation.');
-      return {
-        changed: hasTaskChanged(task, nextTask),
-        task: nextTask
+    if (listed) {
+      pr = {
+        number: listed.number,
+        url: listed.url,
+        state: listed.state,
+        mergeStateStatus: listed.mergeStateStatus,
+        body: listed.body
       };
+      nextTask.pr = pr;
     }
-    pr = {
-      number: listed.number,
-      url: listed.url,
-      state: listed.state,
-      mergeStateStatus: listed.mergeStateStatus,
-      body: listed.body
+  }
+
+  const sessionAlive = await isSessionAlive(runner, nextTask.tmuxSession);
+  if (!sessionAlive && !pr) {
+    return await handleActionableFailure(config, runner, nextTask, 'session_died', 'tmux session not found');
+  }
+
+  if (!pr) {
+    nextTask = setTaskStatus(nextTask, 'running', 'Waiting for PR creation.');
+    return {
+      changed: hasTaskChanged(task, nextTask),
+      task: nextTask
     };
-    nextTask.pr = pr;
   }
 
   const fullPr = await getPrView(runner, pr.number, config.repoPath);

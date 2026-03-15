@@ -17,6 +17,7 @@ const baseConfig: ZoeConfig = {
   pollIntervalMinutes: 10,
   registryPath: '/tmp/active.json',
   historyPath: '/tmp/history.jsonl',
+  findingLogPath: '/tmp/review-findings.jsonl',
   retryDir: '/tmp/retries',
   lockPath: '/tmp/check.lock'
 };

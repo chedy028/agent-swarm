@@ -74,6 +74,7 @@ export async function loadConfig(configPath = DEFAULT_CONFIG_PATH): Promise<ZoeC
     pollIntervalMinutes: mustNumber(parsed.pollIntervalMinutes, 'pollIntervalMinutes'),
     registryPath: path.resolve(mustString(parsed.registryPath, 'registryPath')),
     historyPath: path.resolve(mustString(parsed.historyPath, 'historyPath')),
+    findingLogPath: path.resolve(mustString(parsed.findingLogPath, 'findingLogPath')),
     retryDir: path.resolve(mustString(parsed.retryDir, 'retryDir')),
     lockPath: path.resolve(mustString(parsed.lockPath, 'lockPath'))
   };

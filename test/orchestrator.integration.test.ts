@@ -51,6 +51,7 @@ async function makeConfig(root: string): Promise<ZoeConfig> {
     pollIntervalMinutes: 10,
     registryPath,
     historyPath: path.join(autobotDir, 'task-history.jsonl'),
+    findingLogPath: path.join(autobotDir, 'review-findings.jsonl'),
     retryDir: path.join(autobotDir, 'retries'),
     lockPath: path.join(autobotDir, 'check.lock')
   };
@@ -127,6 +128,42 @@ describe('orchestrator integration', () => {
     expect(launches.length).toBe(3);
   });
 
+  test('spawn bases worktrees on the local main branch when it exists', async () => {
+    const promptFile = path.join(root, 'prompt.md');
+    await writeFile(promptFile, 'build feature');
+
+    const runner = new MockRunner();
+
+    await spawnTask(config, runner, {
+      id: 'feat-local-main',
+      description: 'Use local main',
+      promptFile
+    });
+
+    const worktreeAdds = runner.calls.filter((command) => command.includes('git -C') && command.includes('worktree add'));
+    expect(worktreeAdds).toHaveLength(3);
+    expect(worktreeAdds.every((command) => command.includes(" 'main'"))).toBe(true);
+    expect(worktreeAdds.some((command) => command.includes('origin/main'))).toBe(false);
+  });
+
+  test('spawn falls back to origin/main when the local main branch is missing', async () => {
+    const promptFile = path.join(root, 'prompt.md');
+    await writeFile(promptFile, 'build feature');
+
+    const runner = new MockRunner();
+    runner.when(/rev-parse --verify 'refs\/heads\/main'/, { stdout: '', stderr: 'missing', exitCode: 128 });
+
+    await spawnTask(config, runner, {
+      id: 'feat-origin-main',
+      description: 'Use origin main',
+      promptFile
+    });
+
+    const worktreeAdds = runner.calls.filter((command) => command.includes('git -C') && command.includes('worktree add'));
+    expect(worktreeAdds).toHaveLength(3);
+    expect(worktreeAdds.every((command) => command.includes(" 'origin/main'"))).toBe(true);
+  });
+
   test('check retries only the failed child', async () => {
     const now = Date.now();
     await writeFile('/tmp/prompt.md', 'retry task');
@@ -136,6 +173,20 @@ describe('orchestrator integration', () => {
     const claude = { ...makeChildTask('t-retry', 'claude', now), pr: { number: 103, url: 'https://example/pr/103' } };
 
     await writeFile(config.registryPath, JSON.stringify({ tasks: [parent, codex, gemini, claude] }, null, 2));
+    await writeFile(
+      config.findingLogPath,
+      `${JSON.stringify({
+        id: 'finding-1',
+        status: 'open',
+        verdict: 'needs_fix',
+        note: 'Equation line should be human-readable.',
+        taskId: 't-retry',
+        parentTaskId: 't-retry',
+        artifactId: 'eq:line-771',
+        createdAt: now,
+        updatedAt: now
+      })}\n`
+    );
 
     const runner = new MockRunner();
     runner.when(/tmux has-session/, { stdout: '', stderr: '', exitCode: 0 });
@@ -206,6 +257,63 @@ describe('orchestrator integration', () => {
 
     const launches = runner.calls.filter((command) => command.includes('tmux new-session'));
     expect(launches.length).toBe(1);
+
+    const deltaPath = path.join(config.retryDir, 't-retry--codex-retry-1.md');
+    const deltaText = await readFile(deltaPath, 'utf8');
+    expect(deltaText).toContain('Human Verification Log (Open Findings)');
+    expect(deltaText).toContain('Equation line should be human-readable.');
+  });
+
+  test('check continues evaluating a PR even after the agent session exits', async () => {
+    const now = Date.now();
+    const parent = makeParentTask('t-headless', now);
+    const codex = { ...makeChildTask('t-headless', 'codex', now), branch: 'feat/t-headless-codex' };
+    const gemini = { ...makeChildTask('t-headless', 'gemini', now), branch: 'feat/t-headless-gemini' };
+    const claude = { ...makeChildTask('t-headless', 'claude', now), branch: 'feat/t-headless-claude' };
+    await writeFile(config.registryPath, JSON.stringify({ tasks: [parent, codex, gemini, claude] }, null, 2));
+
+    const runner = new MockRunner();
+    runner.when(/tmux has-session -t 'zoe-t-headless-codex'/, { stdout: '', stderr: '', exitCode: 1 });
+    runner.when(/tmux has-session -t 'zoe-t-headless-gemini'/, { stdout: '', stderr: '', exitCode: 0 });
+    runner.when(/tmux has-session -t 'zoe-t-headless-claude'/, { stdout: '', stderr: '', exitCode: 0 });
+
+    runner.when(/gh pr list --head 'feat\/t-headless-codex'/, {
+      stdout: JSON.stringify([{ number: 301, url: 'https://example/pr/301', state: 'OPEN', mergeStateStatus: 'CLEAN' }]),
+      stderr: '',
+      exitCode: 0
+    });
+    runner.when(/gh pr view 301 --json number,url,state,mergeStateStatus,body,isDraft,reviews,comments,files/, {
+      stdout: JSON.stringify({
+        number: 301,
+        url: 'https://example/pr/301',
+        state: 'OPEN',
+        mergeStateStatus: 'CLEAN',
+        body: 'no ui',
+        isDraft: false,
+        reviews: [],
+        comments: [],
+        files: [{ path: 'server/index.ts' }]
+      }),
+      stderr: '',
+      exitCode: 0
+    });
+    runner.when(/gh pr checks 301/, {
+      stdout: JSON.stringify([{ name: 'test', state: 'IN_PROGRESS' }]),
+      stderr: '',
+      exitCode: 0
+    });
+
+    runner.when(/gh pr list --head 'feat\/t-headless-gemini'/, { stdout: '[]', stderr: '', exitCode: 0 });
+    runner.when(/gh pr list --head 'feat\/t-headless-claude'/, { stdout: '[]', stderr: '', exitCode: 0 });
+
+    const result = await checkTasks(config, runner);
+    expect(result.messages).toEqual([]);
+
+    const saved = JSON.parse(await readFile(config.registryPath, 'utf8')) as { tasks: TaskRecord[] };
+    const codexAfter = saved.tasks.find((savedTask) => savedTask.id === 't-headless--codex');
+    expect(codexAfter?.status).toBe('waiting_ci');
+    expect(codexAfter?.retryCount).toBe(0);
+    expect(codexAfter?.pr?.number).toBe(301);
   });
 
   test('first fully-passing child becomes winner and others are superseded', async () => {

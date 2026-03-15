@@ -1,0 +1,90 @@
+{
+  "tasks": [
+    {
+      "id": "phase3-5-review-ui-1773526058",
+      "description": "Phase 3.5: read-only artifact-vs-PDF reviewer UI",
+      "agent": "codex",
+      "repo": "eng-standard-hub-phase3",
+      "branch": "feat/phase3-5-review-ui-1773526058",
+      "worktree": "/Users/chendongkai/Desktop/Project/eng-standard-hub-phase3/.worktrees/phase3-5-review-ui-1773526058",
+      "tmuxSession": "zoe-phase3-5-review-ui-1773526058",
+      "promptFile": "/tmp/phase3_5_review_ui.md",
+      "status": "waiting_ci",
+      "retryCount": 1,
+      "startedAt": 1773526059331,
+      "updatedAt": 1773543613014,
+      "note": "Branch is not synced with main.",
+      "pr": {
+        "number": 5,
+        "url": "https://github.com/chedy028/eng-standard-hub/pull/5",
+        "state": "MERGED",
+        "mergeStateStatus": "UNKNOWN",
+        "body": "## Summary\n- add reviewer config (`config/reviewer.yaml`) with `pdf_root`\n- add reviewer endpoints: `review-data`, `source-pdf`, and `/review/{pack}/{release}` page\n- add safe source PDF resolver constrained under `pdf_root`\n- expose normalized artifact rows for human review (with `source_region_fingerprint`)\n- update docs and API contract\n- extend tests for reviewer API routes and resolver behavior\n\n## Validation\n- `PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'`\n\n## Notes\n- This phase is read-only reviewer UX (no writeback/override actions).\n- Page-jump review only (no bbox overlay in this phase).\n"
+      },
+      "checks": {
+        "ciPassed": true,
+        "checks": [
+          {
+            "name": "tests",
+            "state": "SUCCESS",
+            "url": "https://github.com/chedy028/eng-standard-hub/actions/runs/23101782012/job/67103661245"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS",
+            "url": "https://github.com/chedy028/eng-standard-hub/actions/runs/23101781334/job/67103659608"
+          }
+        ]
+      },
+      "reviewSummary": {
+        "approvalCount": 0,
+        "approvalsByLogin": [],
+        "criticalOpenCount": 0
+      },
+      "lastFailureReason": "ci_failed"
+    },
+    {
+      "id": "phase4-claude-opus46-1773527350",
+      "description": "Phase 4: reviewer overlay + correction scaffold",
+      "agent": "claude",
+      "repo": "eng-standard-hub-phase3",
+      "branch": "feat/phase4-claude-opus46-1773527350",
+      "worktree": "/Users/chendongkai/Desktop/Project/eng-standard-hub-phase3/.worktrees/phase4-claude-opus46-1773527350",
+      "tmuxSession": "zoe-phase4-claude-opus46-1773527350",
+      "promptFile": "/tmp/phase4_review_overlay_opus46.md",
+      "status": "blocked",
+      "retryCount": 3,
+      "startedAt": 1773527384491,
+      "updatedAt": 1773542099347,
+      "note": "Blocked after max retries (3). Last failure: CI failed checks: tests(FAILURE), tests(FAILURE)",
+      "lastFailureReason": "ci_failed",
+      "pr": {
+        "number": 4,
+        "url": "https://github.com/chedy028/eng-standard-hub/pull/4",
+        "state": "OPEN",
+        "mergeStateStatus": "UNSTABLE",
+        "body": "## Summary\n\n- **Overlay geometry module** (`src/esh/overlay.py`): Classifies artifact bounding boxes as `exact`, `approximate`, or `missing`. Generates deterministic fallback bboxes for items lacking OCR geometry.\n- **Per-page overlay endpoint** (`GET /review/overlay?page=N`): Returns all chunks, equations, and tables on a page with `bbox_status` and `overlay_bbox` fields ready for PDF rendering.\n- **Correction draft capture** (`src/esh/corrections.py`): Append-only JSONL storage under `review/correction_drafts.jsonl`. `POST` to submit, `GET` to list. Canonical artifact files are never mutated.\n- **Reviewer UI** (`GET /reviewer/{pack_id}/{release_version}`): Single-page HTML with artifact listing, bbox provenance badges, and overlay toggle for visual validation.\n\n## Backward Compatibility\n\n- All existing V1 endpoints are unchanged in shape and behavior.\n- New fields (`bbox_status`, `overlay_bbox`) only appear in the `/review/overlay` endpoint.\n- Correction endpoints are purely additive — no existing data is modified.\n- No changes to the calculation path or canonical published artifacts.\n\n## Schema Note\n\nThe `/review/overlay` response adds two new fields per artifact:\n- `bbox_status`: `\"exact\"` | `\"approximate\"` | `\"missing\"`\n- `overlay_bbox`: `[x0, y0, x1, y1]` in A4 point-space\n\nThese fields do not appear in any existing endpoint responses.\n\n## Test plan\n\n- [x] `test_overlay.py` — bbox_status classification (exact/approximate/missing), deterministic fallback, enrichment of all artifact types, page-level retrieval integration\n- [x] `test_corrections.py` — validation rules, write/list JSONL round-trip, API endpoint POST/GET/422, no canonical file mutation\n- [x] All 40 tests pass (8 new + 32 existing)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+      },
+      "checks": {
+        "ciPassed": false,
+        "checks": [
+          {
+            "name": "tests",
+            "state": "FAILURE",
+            "url": "https://github.com/chedy028/eng-standard-hub/actions/runs/23101682532/job/67103402757"
+          },
+          {
+            "name": "tests",
+            "state": "FAILURE",
+            "url": "https://github.com/chedy028/eng-standard-hub/actions/runs/23101681662/job/67103400281"
+          }
+        ]
+      },
+      "reviewSummary": {
+        "approvalCount": 0,
+        "approvalsByLogin": [],
+        "criticalOpenCount": 0
+      }
+    }
+  ]
+}

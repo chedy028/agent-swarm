@@ -1,0 +1,72 @@
+{
+  "tasks": [
+    {
+      "id": "ampacity-v2-kickoff-20260315-2",
+      "kind": "parent",
+      "description": "Kickoff: ship one high-value improvement for ampacity-v2",
+      "childIds": [
+        "ampacity-v2-kickoff-20260315-2--codex",
+        "ampacity-v2-kickoff-20260315-2--gemini",
+        "ampacity-v2-kickoff-20260315-2--claude"
+      ],
+      "repo": "ampacity-v2",
+      "status": "running",
+      "retryCount": 0,
+      "startedAt": 1773597678257,
+      "updatedAt": 1773597705486,
+      "note": "Trio swarm in progress."
+    },
+    {
+      "id": "ampacity-v2-kickoff-20260315-2--claude",
+      "kind": "child",
+      "description": "Kickoff: ship one high-value improvement for ampacity-v2",
+      "agent": "claude",
+      "parentId": "ampacity-v2-kickoff-20260315-2",
+      "repo": "ampacity-v2",
+      "branch": "feat/ampacity-v2-kickoff-20260315-2-claude",
+      "worktree": "/Users/chendongkai/Desktop/Project/ampacity-v2/.worktrees/ampacity-v2-kickoff-20260315-2-claude",
+      "tmuxSession": "zoe-ampacity-v2-kickoff-20260315-2-claude",
+      "promptFile": "/Users/chendongkai/Desktop/Project/agent swarm/.autobot/ampacity-v2/kickoff.md",
+      "status": "running",
+      "retryCount": 0,
+      "startedAt": 1773597678257,
+      "updatedAt": 1773597705486,
+      "note": "Waiting for PR creation."
+    },
+    {
+      "id": "ampacity-v2-kickoff-20260315-2--codex",
+      "kind": "child",
+      "description": "Kickoff: ship one high-value improvement for ampacity-v2",
+      "agent": "codex",
+      "parentId": "ampacity-v2-kickoff-20260315-2",
+      "repo": "ampacity-v2",
+      "branch": "feat/ampacity-v2-kickoff-20260315-2-codex",
+      "worktree": "/Users/chendongkai/Desktop/Project/ampacity-v2/.worktrees/ampacity-v2-kickoff-20260315-2-codex",
+      "tmuxSession": "zoe-ampacity-v2-kickoff-20260315-2-codex",
+      "promptFile": "/Users/chendongkai/Desktop/Project/agent swarm/.autobot/ampacity-v2/kickoff.md",
+      "status": "running",
+      "retryCount": 0,
+      "startedAt": 1773597678257,
+      "updatedAt": 1773597704654,
+      "note": "Waiting for PR creation."
+    },
+    {
+      "id": "ampacity-v2-kickoff-20260315-2--gemini",
+      "kind": "child",
+      "description": "Kickoff: ship one high-value improvement for ampacity-v2",
+      "agent": "gemini",
+      "parentId": "ampacity-v2-kickoff-20260315-2",
+      "repo": "ampacity-v2",
+      "branch": "feat/ampacity-v2-kickoff-20260315-2-gemini",
+      "worktree": "/Users/chendongkai/Desktop/Project/ampacity-v2/.worktrees/ampacity-v2-kickoff-20260315-2-gemini",
+      "tmuxSession": "zoe-ampacity-v2-kickoff-20260315-2-gemini",
+      "promptFile": "/Users/chendongkai/Desktop/Project/agent swarm/.autobot/ampacity-v2/kickoff.md",
+      "status": "running",
+      "retryCount": 1,
+      "startedAt": 1773597678257,
+      "updatedAt": 1773597705054,
+      "note": "Auto-retry #1 triggered by session_died.",
+      "lastFailureReason": "session_died"
+    }
+  ]
+}

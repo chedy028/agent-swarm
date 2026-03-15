@@ -1,0 +1,30 @@
+{
+  "repoPath": "/Users/chendongkai/Desktop/Project/ampacity-v2",
+  "worktreeRoot": "/Users/chendongkai/Desktop/Project/ampacity-v2/.worktrees",
+  "mainBranch": "master",
+  "installCommand": "",
+  "allowedAgents": ["codex", "claude", "gemini"],
+  "agentLaunchCommands": {
+    "codex": "codex --model gpt-5.3-codex -c \"model_reasoning_effort=high\" --dangerously-bypass-approvals-and-sandbox \"{prompt}\"",
+    "claude": "env ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY\" claude --model opus --dangerously-skip-permissions -p \"{prompt}\"",
+    "gemini": "env GEMINI_API_KEY=\"$GEMINI_API_KEY\" gemini --model gemini-2.5-pro --prompt \"{prompt}\" --yolo"
+  },
+  "uiAgent": "gemini",
+  "reviewerBotLogins": ["codex-reviewer[bot]", "claude-reviewer[bot]", "gemini-reviewer[bot]"],
+  "requiredApprovals": 3,
+  "uiPathGlobs": [
+    "frontend/app/**/*.tsx",
+    "frontend/app/**/*.jsx",
+    "frontend/app/**/*.css",
+    "frontend/components/**/*.tsx",
+    "frontend/components/**/*.jsx",
+    "frontend/components/**/*.css"
+  ],
+  "criticalTagPattern": "\\[critical\\]",
+  "maxRetries": 3,
+  "pollIntervalMinutes": 10,
+  "registryPath": ".autobot/ampacity-v2/active-tasks.json",
+  "historyPath": ".autobot/ampacity-v2/task-history.jsonl",
+  "retryDir": ".autobot/ampacity-v2/retries",
+  "lockPath": ".autobot/ampacity-v2/check.lock"
+}

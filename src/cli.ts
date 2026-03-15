@@ -50,8 +50,7 @@ function toBool(value: string | boolean | undefined): boolean {
 
 function printHelp(): void {
   console.log(`zoe commands:
-  zoe spawn --id --agent --description --prompt-file [--config]
-    (tip: --agent ui routes to config.uiAgent, default gemini)
+  zoe spawn --id --description --prompt-file [--config]
   zoe check [--task-id] [--config]
   zoe status [--task-id] [--json] [--config]
   zoe retry --task-id --reason [--delta-file] [--config]
@@ -72,12 +71,12 @@ async function main(): Promise<void> {
   const runner = new DefaultCommandRunner();
 
   if (command === 'spawn') {
-    const requestedAgent = getFlag(parsed.flags, 'agent') ?? '';
-    const resolvedAgent =
-      requestedAgent === 'ui' ? (config.uiAgent && config.uiAgent.trim() !== '' ? config.uiAgent : 'gemini') : requestedAgent;
+    if (getFlag(parsed.flags, 'agent')) {
+      throw new Error('spawn no longer accepts --agent. Trio mode always launches codex, gemini, and claude.');
+    }
+
     const result = await spawnTask(config, runner, {
       id: getFlag(parsed.flags, 'id') ?? '',
-      agent: resolvedAgent,
       description: getFlag(parsed.flags, 'description') ?? '',
       promptFile: getFlag(parsed.flags, 'prompt-file') ?? ''
     });
@@ -92,13 +91,13 @@ async function main(): Promise<void> {
     const result = await withFileLock(config.lockPath, runCheck, { staleMs: 60 * 60 * 1000 });
 
     if (result.messages.length === 0) {
-      console.log('no_changes');
       return;
     }
 
     for (const message of result.messages) {
       console.log(message);
     }
+    process.exitCode = 2;
     return;
   }
 
@@ -112,8 +111,11 @@ async function main(): Promise<void> {
     for (const task of tasks) {
       console.log([
         `id=${task.id}`,
+        `kind=${task.kind}`,
         `status=${task.status}`,
-        `agent=${task.agent}`,
+        `agent=${task.agent ?? '-'}`,
+        `parent=${task.parentId ?? '-'}`,
+        `winner=${task.winnerChildId ?? '-'}`,
         `pr=${task.pr?.number ?? '-'}`,
         `retries=${task.retryCount}`,
         `note=${task.note ?? '-'}`

@@ -28,8 +28,7 @@ gh auth status
 ## Commands
 
 ```bash
-pnpm zoe spawn --id feat-custom-templates --agent codex --description "Custom email templates" --prompt-file /abs/path/prompt.md
-pnpm zoe spawn --id ui-polish-1 --agent ui --description "UI polish pass" --prompt-file /abs/path/prompt.md
+pnpm zoe spawn --id feat-custom-templates --description "Custom email templates" --prompt-file /abs/path/prompt.md
 pnpm zoe check
 pnpm zoe status
 pnpm zoe status --json
@@ -37,17 +36,21 @@ pnpm zoe retry --task-id feat-custom-templates --reason "fix failed CI"
 pnpm zoe cleanup --dry-run
 ```
 
-`--agent ui` routes to `config.uiAgent` (defaults to `gemini`).
+`spawn` is strict trio mode and always launches `codex`, `gemini`, and `claude` child tasks.
 
 If you use Gemini tasks, ensure Gemini CLI is installed and `GEMINI_API_KEY` is set in your shell environment.
 
 Bash wrappers:
 
 ```bash
-.autobot/spawn-agent.sh --id feat-custom-templates --agent codex --description "Custom email templates" --prompt-file /abs/path/prompt.md
+.autobot/spawn-agent.sh --id feat-custom-templates --description "Custom email templates" --prompt-file /abs/path/prompt.md
 .autobot/check-agents.sh
 .autobot/cleanup-worktrees.sh --dry-run
 ```
+
+`check-agents.sh` exits with:
+- `0` when no human action is needed.
+- non-zero when attention is needed (for example `ready_for_human` or blocked swarm).
 
 ## Cron examples
 

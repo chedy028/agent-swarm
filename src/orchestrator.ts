@@ -3,8 +3,9 @@ import path from 'node:path';
 import { classifyCiState, evaluatePullRequestGate, summarizeReviews } from './gates.js';
 import { findPrByBranch, getPrChecks, getPrView, isPrMerged, shellEscape } from './gh.js';
 import { computeRetryOutcome, isTerminalStatus } from './state.js';
-import { appendHistory, getTask, loadRegistry, saveRegistry, upsertTask } from './store.js';
+import { appendHistory, getTask, loadRegistry, saveRegistry } from './store.js';
 import {
+  AgentName,
   CommandRunner,
   RetryReason,
   TaskRecord,
@@ -13,9 +14,10 @@ import {
   ZoeConfig
 } from './types.js';
 
+const AGENT_PRIORITY: AgentName[] = ['codex', 'gemini', 'claude'];
+
 export interface SpawnInput {
   id: string;
-  agent: string;
   description: string;
   promptFile: string;
 }
@@ -35,21 +37,174 @@ export interface CommandOutput {
   messages: string[];
 }
 
-export async function spawnTask(config: ZoeConfig, runner: CommandRunner, input: SpawnInput): Promise<CommandOutput> {
-  validateSpawnInput(config, input);
-  await access(input.promptFile);
+interface CheckTaskResult {
+  changed: boolean;
+  parent: TaskRecord;
+  children: TaskRecord[];
+  actionableMessages: string[];
+}
 
-  const registry = await loadRegistry(config.registryPath);
-  if (getTask(registry, input.id)) {
-    throw new Error(`Task already exists: ${input.id}`);
+interface CheckChildResult {
+  changed: boolean;
+  task: TaskRecord;
+}
+
+function isChildTask(task: TaskRecord): boolean {
+  return task.kind === 'child';
+}
+
+function isParentTask(task: TaskRecord): boolean {
+  return task.kind === 'parent';
+}
+
+function canonicalAgents(config: ZoeConfig): AgentName[] {
+  const allowed = new Set(config.allowedAgents);
+  return AGENT_PRIORITY.filter((agent) => allowed.has(agent));
+}
+
+function branchFor(taskId: string, agent: AgentName): string {
+  return `feat/${toBranchSegment(taskId)}-${agent}`;
+}
+
+function worktreeFor(config: ZoeConfig, taskId: string, agent: AgentName): string {
+  return path.join(config.worktreeRoot, `${taskId}-${agent}`);
+}
+
+function sessionFor(taskId: string, agent: AgentName): string {
+  return `zoe-${toSessionSegment(taskId)}-${agent}`;
+}
+
+function childIdFor(taskId: string, agent: AgentName): string {
+  return `${taskId}--${agent}`;
+}
+
+function setTaskStatus(task: TaskRecord, status: TaskStatus, note: string): TaskRecord {
+  if (task.status === status && task.note === note) {
+    return task;
   }
 
-  const branch = `feat/${toBranchSegment(input.id)}`;
-  const worktree = path.join(config.worktreeRoot, input.id);
-  const tmuxSession = `zoe-${toSessionSegment(input.id)}`;
-  const now = Date.now();
+  return {
+    ...task,
+    status,
+    note,
+    updatedAt: Date.now()
+  };
+}
 
-  await mkdir(config.worktreeRoot, { recursive: true });
+function hasTaskChanged(previous: TaskRecord, next: TaskRecord): boolean {
+  return JSON.stringify(previous) !== JSON.stringify(next);
+}
+
+async function isSessionAlive(runner: CommandRunner, session: string): Promise<boolean> {
+  const result = await runner.run(`tmux has-session -t ${shellEscape(session)}`, { allowFailure: true });
+  return result.exitCode === 0;
+}
+
+function summarizeFailingChecks(checks: Array<{ name: string; state: string }>): string {
+  const failed = checks.filter((check) => ['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED'].includes(check.state));
+  if (failed.length === 0) {
+    return 'CI failed.';
+  }
+
+  return `CI failed checks: ${failed.map((check) => `${check.name}(${check.state})`).join(', ')}`;
+}
+
+async function buildPrompt(promptFile: string, deltaFile?: string): Promise<string> {
+  const basePrompt = await readFile(promptFile, 'utf8');
+  if (!deltaFile) {
+    return basePrompt.trim();
+  }
+
+  const deltaPrompt = await readFile(deltaFile, 'utf8');
+  return `${basePrompt.trim()}\n\n${deltaPrompt.trim()}`;
+}
+
+function renderLaunchCommand(template: string, variables: Record<string, string>): string {
+  return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key: string) => {
+    const value = variables[key] ?? '';
+    if (key === 'prompt') {
+      return escapeForDoubleQuotedShell(value);
+    }
+    return value;
+  });
+}
+
+function escapeForDoubleQuotedShell(value: string): string {
+  return value.replace(/[\\"$`]/g, (ch) => `\\${ch}`).replace(/\n/g, ' ');
+}
+
+async function launchAgentSession(
+  config: ZoeConfig,
+  runner: CommandRunner,
+  task: TaskRecord,
+  deltaFile?: string
+): Promise<void> {
+  if (!task.agent || !task.worktree || !task.tmuxSession || !task.promptFile || !task.branch) {
+    throw new Error(`Task ${task.id} is missing child execution metadata`);
+  }
+
+  const template = config.agentLaunchCommands[task.agent];
+  if (!template) {
+    throw new Error(`Missing launch command template for agent: ${task.agent}`);
+  }
+
+  const prompt = await buildPrompt(task.promptFile, deltaFile);
+  const command = renderLaunchCommand(template, {
+    id: task.id,
+    parent_id: task.parentId ?? '',
+    agent: task.agent,
+    description: task.description,
+    worktree: task.worktree,
+    branch: task.branch,
+    prompt,
+    promptFile: task.promptFile,
+    deltaFile: deltaFile ?? ''
+  });
+
+  await runner.run(`tmux kill-session -t ${shellEscape(task.tmuxSession)}`, { allowFailure: true });
+  await runner.run(
+    `tmux new-session -d -s ${shellEscape(task.tmuxSession)} -c ${shellEscape(task.worktree)} ${shellEscape(command)}`
+  );
+}
+
+async function writeRetryDelta(
+  config: ZoeConfig,
+  taskId: string,
+  attempt: number,
+  reason: RetryReason,
+  detail: string
+): Promise<string> {
+  await mkdir(config.retryDir, { recursive: true });
+  const deltaPath = path.join(config.retryDir, `${taskId}-retry-${attempt}.md`);
+  const contents = [
+    '# Retry Delta',
+    '',
+    `Reason: ${reason}`,
+    `Detail: ${detail}`,
+    '',
+    'Please fix the issue above with minimal changes.',
+    'Constrain edits to files directly related to this failure.',
+    'Run relevant tests/checks before updating the PR.'
+  ].join('\n');
+
+  await writeFile(deltaPath, `${contents}\n`, 'utf8');
+  return deltaPath;
+}
+
+async function createChildTask(
+  config: ZoeConfig,
+  runner: CommandRunner,
+  parentId: string,
+  description: string,
+  promptFile: string,
+  agent: AgentName,
+  now: number
+): Promise<TaskRecord> {
+  const branch = branchFor(parentId, agent);
+  const worktree = worktreeFor(config, parentId, agent);
+  const tmuxSession = sessionFor(parentId, agent);
+  const id = childIdFor(parentId, agent);
+
   await runner.run(
     `git -C ${shellEscape(config.repoPath)} worktree add ${shellEscape(worktree)} -b ${shellEscape(branch)} ${shellEscape(`origin/${config.mainBranch}`)}`
   );
@@ -59,98 +214,152 @@ export async function spawnTask(config: ZoeConfig, runner: CommandRunner, input:
   }
 
   const task: TaskRecord = {
-    id: input.id,
-    description: input.description,
-    agent: input.agent,
+    id,
+    kind: 'child',
+    description,
+    agent,
+    parentId,
     repo: path.basename(config.repoPath),
     branch,
     worktree,
     tmuxSession,
-    promptFile: path.resolve(input.promptFile),
+    promptFile: path.resolve(promptFile),
     status: 'running',
     retryCount: 0,
     startedAt: now,
     updatedAt: now,
-    note: 'Spawned and started agent session.'
+    note: `Spawned and started ${agent} session.`
   };
 
   await launchAgentSession(config, runner, task);
+  return task;
+}
 
-  const nextRegistry = upsertTask(registry, task);
-  await saveRegistry(config.registryPath, nextRegistry);
+function validateSpawnInput(input: SpawnInput): void {
+  if (!input.id || !input.description || !input.promptFile) {
+    throw new Error('spawn requires --id, --description, --prompt-file');
+  }
+}
+
+export async function spawnTask(config: ZoeConfig, runner: CommandRunner, input: SpawnInput): Promise<CommandOutput> {
+  validateSpawnInput(input);
+  await access(input.promptFile);
+
+  const registry = await loadRegistry(config.registryPath);
+  if (getTask(registry, input.id)) {
+    throw new Error(`Task already exists: ${input.id}`);
+  }
+
+  await mkdir(config.worktreeRoot, { recursive: true });
+
+  const now = Date.now();
+  const parent: TaskRecord = {
+    id: input.id,
+    kind: 'parent',
+    description: input.description,
+    childIds: [],
+    repo: path.basename(config.repoPath),
+    status: 'running',
+    retryCount: 0,
+    startedAt: now,
+    updatedAt: now,
+    note: 'Trio swarm spawned (codex, gemini, claude).'
+  };
+
+  const childTasks: TaskRecord[] = [];
+  for (const agent of canonicalAgents(config)) {
+    const child = await createChildTask(config, runner, input.id, input.description, input.promptFile, agent, now);
+    childTasks.push(child);
+  }
+
+  parent.childIds = childTasks.map((task) => task.id);
+
+  const mergedTasks = [...registry.tasks, parent, ...childTasks].sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
+  await saveRegistry(config.registryPath, { tasks: mergedTasks });
 
   return {
-    updatedTasks: [task],
+    updatedTasks: [parent, ...childTasks],
     messages: [
-      `spawned:${task.id}`,
-      `session:${task.tmuxSession}`,
-      `branch:${task.branch}`
+      `spawned_parent:${parent.id}`,
+      ...childTasks.map((child) => `spawned_child:${child.id}:agent=${child.agent}:session=${child.tmuxSession}:branch=${child.branch}`)
     ]
   };
 }
 
-export async function checkTasks(
+async function handleActionableFailure(
   config: ZoeConfig,
   runner: CommandRunner,
-  taskId?: string
-): Promise<CommandOutput> {
-  const registry = await loadRegistry(config.registryPath);
-  const tasks = taskId ? registry.tasks.filter((task) => task.id === taskId) : registry.tasks;
+  task: TaskRecord,
+  reason: RetryReason,
+  detail: string
+): Promise<CheckChildResult> {
+  const outcome = computeRetryOutcome(task.retryCount, config.maxRetries, reason);
 
-  const messages: string[] = [];
-  let nextRegistry: TaskRegistry = { tasks: [...registry.tasks] };
-  const updatedTasks: TaskRecord[] = [];
+  if (outcome.blocked) {
+    const blockedTask = {
+      ...task,
+      status: 'blocked' as TaskStatus,
+      lastFailureReason: reason,
+      note: `Blocked after max retries (${config.maxRetries}). Last failure: ${detail}`,
+      updatedAt: Date.now()
+    };
 
-  for (const task of tasks) {
-    if (isTerminalStatus(task.status)) {
-      continue;
-    }
-
-    const result = await checkSingleTask(config, runner, task);
-    if (!result.changed) {
-      continue;
-    }
-
-    nextRegistry = upsertTask(nextRegistry, result.task);
-    updatedTasks.push(result.task);
-    messages.push(...result.messages.map((msg) => `${task.id}:${msg}`));
+    return {
+      changed: true,
+      task: blockedTask
+    };
   }
 
-  if (updatedTasks.length > 0) {
-    await saveRegistry(config.registryPath, nextRegistry);
-  }
+  const deltaFile = await writeRetryDelta(config, task.id, outcome.nextRetryCount, reason, detail);
+  const retryTask: TaskRecord = {
+    ...task,
+    retryCount: outcome.nextRetryCount,
+    lastFailureReason: reason,
+    note: `Auto-retry #${outcome.nextRetryCount} triggered by ${reason}.`,
+    updatedAt: Date.now(),
+    status: 'running',
+    gatePassedAt: undefined
+  };
 
-  return { updatedTasks, messages };
+  await launchAgentSession(config, runner, retryTask, deltaFile);
+
+  return {
+    changed: true,
+    task: retryTask
+  };
 }
 
-interface CheckTaskResult {
-  changed: boolean;
-  task: TaskRecord;
-  messages: string[];
-}
-
-async function checkSingleTask(
+async function checkSingleChildTask(
   config: ZoeConfig,
   runner: CommandRunner,
   task: TaskRecord
-): Promise<CheckTaskResult> {
+): Promise<CheckChildResult> {
   let nextTask = { ...task };
-  const messages: string[] = [];
 
-  const sessionAlive = await isSessionAlive(runner, task.tmuxSession);
+  if (!nextTask.tmuxSession || !nextTask.branch) {
+    return {
+      changed: true,
+      task: setTaskStatus(nextTask, 'blocked', 'Task metadata invalid: missing tmuxSession/branch.')
+    };
+  }
+
+  if (nextTask.status === 'superseded' || nextTask.status === 'blocked' || nextTask.status === 'done' || nextTask.status === 'failed') {
+    return { changed: false, task: nextTask };
+  }
+
+  const sessionAlive = await isSessionAlive(runner, nextTask.tmuxSession);
   if (!sessionAlive) {
     return await handleActionableFailure(config, runner, nextTask, 'session_died', 'tmux session not found');
   }
 
-  let pr = task.pr;
+  let pr = nextTask.pr;
   if (!pr) {
-    const listed = await findPrByBranch(runner, task.branch, config.repoPath);
+    const listed = await findPrByBranch(runner, nextTask.branch, config.repoPath);
     if (!listed) {
       nextTask = setTaskStatus(nextTask, 'running', 'Waiting for PR creation.');
       return {
         changed: hasTaskChanged(task, nextTask),
-        task: nextTask,
-        messages: ['waiting_for_pr']
+        task: nextTask
       };
     }
     pr = {
@@ -161,7 +370,6 @@ async function checkSingleTask(
       body: listed.body
     };
     nextTask.pr = pr;
-    messages.push(`pr_found#${pr.number}`);
   }
 
   const fullPr = await getPrView(runner, pr.number, config.repoPath);
@@ -169,8 +377,7 @@ async function checkSingleTask(
     nextTask = setTaskStatus(nextTask, 'running', 'PR metadata temporarily unavailable.');
     return {
       changed: hasTaskChanged(task, nextTask),
-      task: nextTask,
-      messages: [...messages, 'pr_unavailable']
+      task: nextTask
     };
   }
 
@@ -199,8 +406,7 @@ async function checkSingleTask(
     nextTask = setTaskStatus(nextTask, 'waiting_ci', 'Branch is not synced with main.');
     return {
       changed: hasTaskChanged(task, nextTask),
-      task: nextTask,
-      messages: [...messages, 'branch_not_synced']
+      task: nextTask
     };
   }
 
@@ -209,8 +415,7 @@ async function checkSingleTask(
     nextTask = setTaskStatus(nextTask, 'waiting_ci', 'CI is still running.');
     return {
       changed: hasTaskChanged(task, nextTask),
-      task: nextTask,
-      messages: [...messages, 'ci_pending']
+      task: nextTask
     };
   }
 
@@ -232,8 +437,7 @@ async function checkSingleTask(
     nextTask = setTaskStatus(nextTask, 'waiting_reviews', 'UI changed but screenshot is missing from PR body.');
     return {
       changed: hasTaskChanged(task, nextTask),
-      task: nextTask,
-      messages: [...messages, 'screenshot_missing']
+      task: nextTask
     };
   }
 
@@ -245,186 +449,266 @@ async function checkSingleTask(
     );
     return {
       changed: hasTaskChanged(task, nextTask),
-      task: nextTask,
-      messages: [...messages, 'waiting_bot_approvals']
+      task: nextTask
     };
   }
 
   nextTask = setTaskStatus(
     nextTask,
     'ready_for_human',
-    `PR #${fullPr.number} ready. CI passed, approvals ${gate.approvalCount}/${config.requiredApprovals}, retries ${nextTask.retryCount}.`
+    `PR #${fullPr.number} gate-passed. CI + reviews complete (${gate.approvalCount}/${config.requiredApprovals}).`
   );
+  if (!nextTask.gatePassedAt) {
+    nextTask.gatePassedAt = Date.now();
+  }
 
   return {
     changed: hasTaskChanged(task, nextTask),
-    task: nextTask,
-    messages: [...messages, 'ready_for_human']
+    task: nextTask
   };
 }
 
-async function handleActionableFailure(
+function pickWinner(children: TaskRecord[]): TaskRecord | undefined {
+  const candidates = children.filter((child) => child.gatePassedAt && child.status !== 'superseded');
+  if (candidates.length === 0) {
+    return undefined;
+  }
+
+  const rank = (agent?: AgentName): number => {
+    if (!agent) {
+      return Number.MAX_SAFE_INTEGER;
+    }
+    const idx = AGENT_PRIORITY.indexOf(agent);
+    return idx === -1 ? Number.MAX_SAFE_INTEGER : idx;
+  };
+
+  const sorted = [...candidates].sort((a, b) => {
+    const aTime = a.gatePassedAt ?? Number.MAX_SAFE_INTEGER;
+    const bTime = b.gatePassedAt ?? Number.MAX_SAFE_INTEGER;
+    if (aTime !== bTime) {
+      return aTime - bTime;
+    }
+    return rank(a.agent) - rank(b.agent);
+  });
+
+  return sorted[0];
+}
+
+async function markChildSuperseded(runner: CommandRunner, child: TaskRecord, winnerId: string): Promise<TaskRecord> {
+  const superseded = setTaskStatus(child, 'superseded', `Superseded by winner task ${winnerId}.`);
+  superseded.supersededBy = winnerId;
+  if (superseded.tmuxSession) {
+    await runner.run(`tmux kill-session -t ${shellEscape(superseded.tmuxSession)}`, { allowFailure: true });
+  }
+  return superseded;
+}
+
+function allChildrenBlocked(children: TaskRecord[]): boolean {
+  return children.length > 0 && children.every((child) => child.status === 'blocked' || child.status === 'failed');
+}
+
+async function checkParentTask(
   config: ZoeConfig,
   runner: CommandRunner,
-  task: TaskRecord,
-  reason: RetryReason,
-  detail: string
+  parent: TaskRecord,
+  children: TaskRecord[]
 ): Promise<CheckTaskResult> {
-  const outcome = computeRetryOutcome(task.retryCount, config.maxRetries, reason);
-  const messages: string[] = [];
+  let nextParent = { ...parent };
+  const nextChildren = children.map((child) => ({ ...child }));
+  const actionableMessages: string[] = [];
+  let changed = false;
 
-  if (outcome.blocked) {
-    const blockedTask = {
-      ...task,
-      status: 'blocked' as TaskStatus,
-      lastFailureReason: reason,
-      note: `Blocked after max retries (${config.maxRetries}). Last failure: ${detail}`,
-      updatedAt: Date.now()
+  if (nextParent.status === 'done' || nextParent.status === 'blocked') {
+    return {
+      changed: false,
+      parent: nextParent,
+      children: nextChildren,
+      actionableMessages
     };
+  }
+
+  const childById = new Map(nextChildren.map((child) => [child.id, child]));
+
+  if (nextParent.winnerChildId) {
+    const winner = childById.get(nextParent.winnerChildId);
+    if (!winner || !winner.pr?.number) {
+      nextParent = setTaskStatus(nextParent, 'blocked', 'Winner metadata missing; manual intervention required.');
+      changed = true;
+      actionableMessages.push(`attention_required:${nextParent.id}:winner_metadata_missing`);
+      return {
+        changed,
+        parent: nextParent,
+        children: nextChildren,
+        actionableMessages
+      };
+    }
+
+    const merged = await isPrMerged(runner, winner.pr.number, config.repoPath);
+    if (merged) {
+      const now = Date.now();
+      winner.status = 'done';
+      winner.updatedAt = now;
+      winner.completedAt = now;
+      winner.note = `Merged PR #${winner.pr.number}.`;
+
+      nextParent.status = 'done';
+      nextParent.updatedAt = now;
+      nextParent.completedAt = now;
+      nextParent.note = `Winner PR #${winner.pr.number} merged.`;
+      changed = true;
+    } else {
+      nextParent = setTaskStatus(nextParent, 'ready_for_human', `Winner selected (${winner.id}) awaiting merge.`);
+      changed = changed || hasTaskChanged(parent, nextParent);
+    }
 
     return {
-      changed: true,
-      task: blockedTask,
-      messages: [`blocked:${reason}`]
+      changed,
+      parent: nextParent,
+      children: nextChildren,
+      actionableMessages
     };
   }
 
-  const deltaFile = await writeRetryDelta(config, task.id, outcome.nextRetryCount, reason, detail);
-  const retryTask: TaskRecord = {
-    ...task,
-    retryCount: outcome.nextRetryCount,
-    lastFailureReason: reason,
-    note: `Auto-retry #${outcome.nextRetryCount} triggered by ${reason}.`,
-    updatedAt: Date.now(),
-    status: 'running'
-  };
-
-  await launchAgentSession(config, runner, retryTask, deltaFile);
-  messages.push(`auto_retry:${reason}:attempt_${outcome.nextRetryCount}`);
-
-  return {
-    changed: true,
-    task: retryTask,
-    messages
-  };
-}
-
-async function writeRetryDelta(
-  config: ZoeConfig,
-  taskId: string,
-  attempt: number,
-  reason: RetryReason,
-  detail: string
-): Promise<string> {
-  await mkdir(config.retryDir, { recursive: true });
-  const deltaPath = path.join(config.retryDir, `${taskId}-retry-${attempt}.md`);
-  const contents = [
-    '# Retry Delta',
-    '',
-    `Reason: ${reason}`,
-    `Detail: ${detail}`,
-    '',
-    'Please fix the issue above with minimal changes.',
-    'Constrain edits to files directly related to this failure.',
-    'Run relevant tests/checks before updating the PR.'
-  ].join('\n');
-
-  await writeFile(deltaPath, `${contents}\n`, 'utf8');
-  return deltaPath;
-}
-
-function summarizeFailingChecks(checks: Array<{ name: string; state: string }>): string {
-  const failed = checks.filter((check) => ['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED'].includes(check.state));
-  if (failed.length === 0) {
-    return 'CI failed.';
+  for (let i = 0; i < nextChildren.length; i += 1) {
+    const child = nextChildren[i];
+    const checked = await checkSingleChildTask(config, runner, child);
+    if (checked.changed) {
+      nextChildren[i] = checked.task;
+      changed = true;
+    }
   }
 
-  return `CI failed checks: ${failed.map((check) => `${check.name}(${check.state})`).join(', ')}`;
-}
+  const winner = pickWinner(nextChildren);
+  if (winner) {
+    const now = Date.now();
+    nextParent.winnerChildId = winner.id;
+    nextParent.winnerPrNumber = winner.pr?.number;
+    nextParent.winnerSelectedAt = now;
+    nextParent.status = 'ready_for_human';
+    nextParent.note = `Winner selected: ${winner.id}${winner.pr?.number ? ` (PR #${winner.pr.number})` : ''}.`;
+    nextParent.updatedAt = now;
 
-function setTaskStatus(task: TaskRecord, status: TaskStatus, note: string): TaskRecord {
+    for (let i = 0; i < nextChildren.length; i += 1) {
+      const child = nextChildren[i];
+      if (child.id === winner.id) {
+        continue;
+      }
+      if (child.status === 'done' || child.status === 'superseded') {
+        continue;
+      }
+      nextChildren[i] = await markChildSuperseded(runner, child, winner.id);
+      changed = true;
+    }
+
+    changed = true;
+    actionableMessages.push(`ready_for_human:${nextParent.id}:winner=${winner.id}:pr=${winner.pr?.number ?? '-'}`);
+
+    return {
+      changed,
+      parent: nextParent,
+      children: nextChildren,
+      actionableMessages
+    };
+  }
+
+  if (allChildrenBlocked(nextChildren)) {
+    nextParent = setTaskStatus(nextParent, 'blocked', 'All trio agents blocked before a winner was selected.');
+    changed = true;
+    actionableMessages.push(`attention_required:${nextParent.id}:all_children_blocked`);
+    return {
+      changed,
+      parent: nextParent,
+      children: nextChildren,
+      actionableMessages
+    };
+  }
+
+  nextParent = setTaskStatus(nextParent, 'running', 'Trio swarm in progress.');
+  changed = changed || hasTaskChanged(parent, nextParent);
+
   return {
-    ...task,
-    status,
-    note,
-    updatedAt: Date.now()
+    changed,
+    parent: nextParent,
+    children: nextChildren,
+    actionableMessages
   };
 }
 
-function hasTaskChanged(previous: TaskRecord, next: TaskRecord): boolean {
-  return JSON.stringify(previous) !== JSON.stringify(next);
-}
-
-async function isSessionAlive(runner: CommandRunner, session: string): Promise<boolean> {
-  const result = await runner.run(`tmux has-session -t ${shellEscape(session)}`, { allowFailure: true });
-  return result.exitCode === 0;
-}
-
-async function launchAgentSession(
+export async function checkTasks(
   config: ZoeConfig,
   runner: CommandRunner,
-  task: TaskRecord,
-  deltaFile?: string
-): Promise<void> {
-  const template = config.agentLaunchCommands[task.agent];
-  if (!template) {
-    throw new Error(`Missing launch command template for agent: ${task.agent}`);
-  }
+  taskId?: string
+): Promise<CommandOutput> {
+  const registry = await loadRegistry(config.registryPath);
+  const allTasks = registry.tasks;
 
-  const prompt = await buildPrompt(task.promptFile, deltaFile);
-  const command = renderLaunchCommand(template, {
-    id: task.id,
-    agent: task.agent,
-    description: task.description,
-    worktree: task.worktree,
-    branch: task.branch,
-    prompt,
-    promptFile: task.promptFile,
-    deltaFile: deltaFile ?? ''
-  });
+  const parentTasks = allTasks.filter(isParentTask);
+  const taskById = new Map(allTasks.map((task) => [task.id, task]));
 
-  await runner.run(`tmux kill-session -t ${shellEscape(task.tmuxSession)}`, { allowFailure: true });
-  await runner.run(
-    `tmux new-session -d -s ${shellEscape(task.tmuxSession)} -c ${shellEscape(task.worktree)} ${shellEscape(command)}`
-  );
-}
-
-function renderLaunchCommand(template: string, variables: Record<string, string>): string {
-  return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key: string) => {
-    const value = variables[key] ?? '';
-    if (key === 'prompt') {
-      return escapeForDoubleQuotedShell(value);
+  const selectedParentIds = new Set<string>();
+  if (taskId) {
+    const selected = taskById.get(taskId);
+    if (!selected) {
+      return { updatedTasks: [], messages: [] };
     }
-    return value;
-  });
-}
-
-function escapeForDoubleQuotedShell(value: string): string {
-  return value.replace(/[\\"$`]/g, (ch) => `\\${ch}`).replace(/\n/g, ' ');
-}
-
-async function buildPrompt(promptFile: string, deltaFile?: string): Promise<string> {
-  const basePrompt = await readFile(promptFile, 'utf8');
-  if (!deltaFile) {
-    return basePrompt.trim();
+    if (isParentTask(selected)) {
+      selectedParentIds.add(selected.id);
+    } else if (selected.parentId) {
+      selectedParentIds.add(selected.parentId);
+    }
+  } else {
+    for (const parent of parentTasks) {
+      selectedParentIds.add(parent.id);
+    }
   }
 
-  const deltaPrompt = await readFile(deltaFile, 'utf8');
-  return `${basePrompt.trim()}\n\n${deltaPrompt.trim()}`;
-}
+  const nextById = new Map(allTasks.map((task) => [task.id, { ...task }]));
+  const updatedTasks: TaskRecord[] = [];
+  const actionableMessages: string[] = [];
 
-function validateSpawnInput(config: ZoeConfig, input: SpawnInput): void {
-  if (!input.id || !input.agent || !input.description || !input.promptFile) {
-    throw new Error('spawn requires --id, --agent, --description, --prompt-file');
+  for (const parentId of selectedParentIds) {
+    const parent = nextById.get(parentId);
+    if (!parent || !isParentTask(parent)) {
+      continue;
+    }
+
+    const children = [...nextById.values()]
+      .filter((task) => isChildTask(task) && task.parentId === parent.id)
+      .sort(
+        (a, b) =>
+          AGENT_PRIORITY.indexOf((a.agent ?? 'claude') as AgentName) -
+          AGENT_PRIORITY.indexOf((b.agent ?? 'claude') as AgentName)
+      );
+
+    const result = await checkParentTask(config, runner, parent, children);
+    if (!result.changed) {
+      continue;
+    }
+
+    nextById.set(parent.id, result.parent);
+    updatedTasks.push(result.parent);
+
+    for (const child of result.children) {
+      nextById.set(child.id, child);
+      if (hasTaskChanged(taskById.get(child.id) ?? child, child)) {
+        updatedTasks.push(child);
+      }
+    }
+
+    actionableMessages.push(...result.actionableMessages);
   }
 
-  if (!config.allowedAgents.includes(input.agent)) {
-    throw new Error(`Agent ${input.agent} is not allowed.`);
+  if (updatedTasks.length > 0) {
+    const nextRegistry: TaskRegistry = {
+      tasks: [...nextById.values()].sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id))
+    };
+    await saveRegistry(config.registryPath, nextRegistry);
   }
 
-  if (!config.agentLaunchCommands[input.agent]) {
-    throw new Error(`Missing launch command template for agent ${input.agent}.`);
-  }
+  return {
+    updatedTasks,
+    messages: actionableMessages
+  };
 }
 
 function toBranchSegment(value: string): string {
@@ -432,7 +716,7 @@ function toBranchSegment(value: string): string {
 }
 
 function toSessionSegment(value: string): string {
-  return toBranchSegment(value).slice(0, 40);
+  return toBranchSegment(value).slice(0, 30);
 }
 
 export async function retryTask(config: ZoeConfig, runner: CommandRunner, input: RetryInput): Promise<CommandOutput> {
@@ -446,6 +730,14 @@ export async function retryTask(config: ZoeConfig, runner: CommandRunner, input:
     throw new Error(`Task not found: ${input.taskId}`);
   }
 
+  if (task.kind !== 'child') {
+    throw new Error('Manual retry is only supported for child tasks.');
+  }
+
+  if (task.status === 'superseded') {
+    throw new Error(`Task ${task.id} is superseded and cannot be retried.`);
+  }
+
   const outcome = computeRetryOutcome(task.retryCount, config.maxRetries, 'manual');
   if (outcome.blocked) {
     const blocked = {
@@ -454,8 +746,8 @@ export async function retryTask(config: ZoeConfig, runner: CommandRunner, input:
       note: `Manual retry denied: max retries reached (${config.maxRetries}).`,
       updatedAt: Date.now()
     };
-    const updatedRegistry = upsertTask(registry, blocked);
-    await saveRegistry(config.registryPath, updatedRegistry);
+    const updatedTasks = registry.tasks.map((existing) => (existing.id === blocked.id ? blocked : existing));
+    await saveRegistry(config.registryPath, { tasks: updatedTasks });
     return {
       updatedTasks: [blocked],
       messages: [`${task.id}:blocked:max_retries_reached`]
@@ -473,18 +765,37 @@ export async function retryTask(config: ZoeConfig, runner: CommandRunner, input:
     status: 'running',
     note: `Manual retry #${outcome.nextRetryCount}: ${input.reason}`,
     lastFailureReason: `manual:${input.reason}`,
-    updatedAt: Date.now()
+    updatedAt: Date.now(),
+    gatePassedAt: undefined
   };
 
   await launchAgentSession(config, runner, nextTask, deltaPath);
 
-  const updatedRegistry = upsertTask(registry, nextTask);
-  await saveRegistry(config.registryPath, updatedRegistry);
+  const updatedTasks = registry.tasks.map((existing) => (existing.id === nextTask.id ? nextTask : existing));
+  await saveRegistry(config.registryPath, { tasks: updatedTasks });
 
   return {
     updatedTasks: [nextTask],
     messages: [`${nextTask.id}:manual_retry:${outcome.nextRetryCount}`]
   };
+}
+
+async function removeChildWorktree(config: ZoeConfig, runner: CommandRunner, child: TaskRecord, messages: string[]): Promise<void> {
+  if (!child.worktree) {
+    return;
+  }
+
+  const remove = await runner.run(
+    `git -C ${shellEscape(config.repoPath)} worktree remove --force ${shellEscape(child.worktree)}`,
+    { allowFailure: true }
+  );
+
+  if (remove.exitCode !== 0) {
+    await rm(child.worktree, { recursive: true, force: true });
+    messages.push(`${child.id}:worktree_removed_fallback`);
+  } else {
+    messages.push(`${child.id}:worktree_removed`);
+  }
 }
 
 export async function cleanupTasks(
@@ -493,48 +804,46 @@ export async function cleanupTasks(
   input: CleanupInput
 ): Promise<CommandOutput> {
   const registry = await loadRegistry(config.registryPath);
-  const remaining: TaskRecord[] = [];
-  const archived: TaskRecord[] = [];
   const messages: string[] = [];
 
-  for (const task of registry.tasks) {
-    if (!isTerminalStatus(task.status)) {
-      remaining.push(task);
+  const parents = registry.tasks.filter(isParentTask);
+  const toRemove = new Set<string>();
+  const archived: TaskRecord[] = [];
+
+  for (const parent of parents) {
+    if (!isTerminalStatus(parent.status)) {
       continue;
     }
 
-    if (task.status === 'done' && task.pr?.number) {
-      const merged = await isPrMerged(runner, task.pr.number, config.repoPath);
+    if (parent.status === 'done' && parent.winnerPrNumber) {
+      const merged = await isPrMerged(runner, parent.winnerPrNumber, config.repoPath);
       if (!merged) {
-        remaining.push(task);
         continue;
       }
     }
 
-    archived.push(task);
+    const children = registry.tasks.filter((task) => isChildTask(task) && task.parentId === parent.id);
 
     if (input.dryRun) {
-      messages.push(`${task.id}:would_archive`);
+      messages.push(`${parent.id}:would_archive`);
       continue;
     }
 
-    await appendHistory(config.historyPath, task);
-    messages.push(`${task.id}:archived`);
+    await appendHistory(config.historyPath, parent);
+    archived.push(parent);
+    toRemove.add(parent.id);
+    messages.push(`${parent.id}:archived`);
 
-    const remove = await runner.run(
-      `git -C ${shellEscape(config.repoPath)} worktree remove --force ${shellEscape(task.worktree)}`,
-      { allowFailure: true }
-    );
-
-    if (remove.exitCode !== 0) {
-      await rm(task.worktree, { recursive: true, force: true });
-      messages.push(`${task.id}:worktree_removed_fallback`);
-    } else {
-      messages.push(`${task.id}:worktree_removed`);
+    for (const child of children) {
+      await appendHistory(config.historyPath, child);
+      archived.push(child);
+      toRemove.add(child.id);
+      await removeChildWorktree(config, runner, child, messages);
     }
   }
 
   if (!input.dryRun) {
+    const remaining = registry.tasks.filter((task) => !toRemove.has(task.id));
     await saveRegistry(config.registryPath, { tasks: remaining });
   }
 
@@ -549,5 +858,15 @@ export async function getStatus(config: ZoeConfig, taskId?: string): Promise<Tas
   if (!taskId) {
     return registry.tasks;
   }
-  return registry.tasks.filter((task) => task.id === taskId);
+
+  const selected = registry.tasks.find((task) => task.id === taskId);
+  if (!selected) {
+    return [];
+  }
+
+  if (selected.kind === 'parent') {
+    return registry.tasks.filter((task) => task.id === selected.id || task.parentId === selected.id);
+  }
+
+  return registry.tasks.filter((task) => task.id === selected.id || task.id === selected.parentId);
 }

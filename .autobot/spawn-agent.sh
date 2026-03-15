@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/.autobot/config.json}"
 
-if [[ $# -lt 8 ]]; then
-  echo "Usage: $0 --id <id> --agent <agent> --description <description> --prompt-file <path>"
+if [[ $# -lt 6 ]]; then
+  echo "Usage: $0 --id <id> --description <description> --prompt-file <path>"
   exit 1
 fi
 

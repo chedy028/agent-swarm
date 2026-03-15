@@ -8,9 +8,9 @@ const baseConfig: ZoeConfig = {
   mainBranch: 'main',
   installCommand: 'pnpm install',
   allowedAgents: ['codex', 'claude', 'gemini'],
-  agentLaunchCommands: { codex: 'codex -p "{prompt}"' },
+  agentLaunchCommands: { codex: 'codex -p "{prompt}"', claude: 'claude -p "{prompt}"', gemini: 'gemini -p "{prompt}"' },
   reviewerBotLogins: ['codex-reviewer[bot]', 'gemini-reviewer[bot]', 'claude-reviewer[bot]'],
-  requiredApprovals: 2,
+  requiredApprovals: 3,
   uiPathGlobs: ['src/**/*.tsx'],
   criticalTagPattern: '\\[critical\\]',
   maxRetries: 3,
@@ -31,7 +31,8 @@ function buildPr(overrides: Partial<GHPRView> = {}): GHPRView {
     isDraft: false,
     reviews: [
       { author: { login: 'codex-reviewer[bot]' }, state: 'APPROVED', body: 'ok' },
-      { author: { login: 'gemini-reviewer[bot]' }, state: 'APPROVED', body: 'ok' }
+      { author: { login: 'gemini-reviewer[bot]' }, state: 'APPROVED', body: 'ok' },
+      { author: { login: 'claude-reviewer[bot]' }, state: 'APPROVED', body: 'ok' }
     ],
     comments: [],
     files: [{ path: 'src/app/page.tsx' }],
@@ -76,5 +77,23 @@ describe('gate evaluator', () => {
     );
     expect(gate.gatePassed).toBe(false);
     expect(gate.approvalCount).toBe(1);
+  });
+
+  test('uses latest review state per bot', () => {
+    const gate = evaluatePullRequestGate(
+      buildPr({
+        reviews: [
+          { author: { login: 'codex-reviewer[bot]' }, state: 'APPROVED' },
+          { author: { login: 'gemini-reviewer[bot]' }, state: 'APPROVED' },
+          { author: { login: 'claude-reviewer[bot]' }, state: 'APPROVED' },
+          { author: { login: 'gemini-reviewer[bot]' }, state: 'CHANGES_REQUESTED' }
+        ]
+      }),
+      passingChecks,
+      baseConfig
+    );
+
+    expect(gate.approvalCount).toBe(2);
+    expect(gate.gatePassed).toBe(false);
   });
 });

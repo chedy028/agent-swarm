@@ -33,7 +33,7 @@ function isCriticalText(body: string | undefined, criticalPattern: RegExp): bool
 
 export function summarizeReviews(pr: GHPRView, config: ZoeConfig): ReviewSummary {
   const botSet = new Set(config.reviewerBotLogins.map((login) => login.toLowerCase()));
-  const approvalsByLogin = new Set<string>();
+  const latestReviewStateByLogin = new Map<string, string>();
   const criticalPattern = new RegExp(config.criticalTagPattern, 'i');
 
   for (const review of pr.reviews ?? []) {
@@ -42,7 +42,12 @@ export function summarizeReviews(pr: GHPRView, config: ZoeConfig): ReviewSummary
       continue;
     }
 
-    if (review.state === 'APPROVED') {
+    latestReviewStateByLogin.set(login, review.state ?? '');
+  }
+
+  const approvalsByLogin = new Set<string>();
+  for (const [login, state] of latestReviewStateByLogin) {
+    if (state === 'APPROVED') {
       approvalsByLogin.add(login);
     }
   }

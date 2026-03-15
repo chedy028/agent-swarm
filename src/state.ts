@@ -1,11 +1,12 @@
 import { RetryOutcome, RetryReason, TaskStatus } from './types.js';
 
 const TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
-  queued: ['running', 'failed', 'blocked'],
-  running: ['running', 'waiting_ci', 'waiting_reviews', 'ready_for_human', 'done', 'failed', 'blocked'],
-  waiting_ci: ['waiting_ci', 'waiting_reviews', 'ready_for_human', 'done', 'failed', 'blocked'],
-  waiting_reviews: ['waiting_reviews', 'ready_for_human', 'done', 'failed', 'blocked'],
-  ready_for_human: ['ready_for_human', 'done', 'failed', 'blocked'],
+  queued: ['running', 'failed', 'blocked', 'superseded'],
+  running: ['running', 'waiting_ci', 'waiting_reviews', 'ready_for_human', 'done', 'failed', 'blocked', 'superseded'],
+  waiting_ci: ['waiting_ci', 'waiting_reviews', 'ready_for_human', 'done', 'failed', 'blocked', 'superseded'],
+  waiting_reviews: ['waiting_reviews', 'ready_for_human', 'done', 'failed', 'blocked', 'superseded'],
+  ready_for_human: ['ready_for_human', 'done', 'failed', 'blocked', 'superseded'],
+  superseded: ['superseded'],
   done: ['done'],
   failed: ['failed'],
   blocked: ['blocked']
@@ -22,7 +23,7 @@ export function assertTransition(from: TaskStatus, to: TaskStatus): void {
 }
 
 export function isTerminalStatus(status: TaskStatus): boolean {
-  return status === 'done' || status === 'failed' || status === 'blocked';
+  return status === 'done' || status === 'failed' || status === 'blocked' || status === 'superseded';
 }
 
 export function computeRetryOutcome(

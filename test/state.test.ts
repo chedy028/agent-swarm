@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { canTransition, computeRetryOutcome } from '../src/state.js';
+import { canTransition, computeRetryOutcome, isTerminalStatus } from '../src/state.js';
 
 describe('state transitions', () => {
   test('allows valid transition', () => {
@@ -10,6 +10,7 @@ describe('state transitions', () => {
   test('rejects invalid transition', () => {
     expect(canTransition('done', 'running')).toBe(false);
     expect(canTransition('blocked', 'ready_for_human')).toBe(false);
+    expect(canTransition('superseded', 'running')).toBe(false);
   });
 });
 
@@ -30,5 +31,9 @@ describe('retry policy', () => {
       blocked: true,
       nextRetryCount: 3
     });
+  });
+
+  test('treats superseded as terminal', () => {
+    expect(isTerminalStatus('superseded')).toBe(true);
   });
 });

@@ -4,9 +4,13 @@ export type TaskStatus =
   | 'waiting_ci'
   | 'waiting_reviews'
   | 'ready_for_human'
+  | 'superseded'
   | 'done'
   | 'failed'
   | 'blocked';
+
+export type TaskKind = 'parent' | 'child';
+export type AgentName = 'codex' | 'gemini' | 'claude';
 
 export type RetryReason = 'session_died' | 'ci_failed' | 'critical_review' | 'manual';
 
@@ -45,13 +49,21 @@ export interface GateResult {
 
 export interface TaskRecord {
   id: string;
+  kind: TaskKind;
   description: string;
-  agent: string;
+  agent?: AgentName;
+  parentId?: string;
+  childIds?: string[];
+  winnerChildId?: string;
+  winnerPrNumber?: number;
+  winnerSelectedAt?: number;
+  gatePassedAt?: number;
+  supersededBy?: string;
   repo: string;
-  branch: string;
-  worktree: string;
-  tmuxSession: string;
-  promptFile: string;
+  branch?: string;
+  worktree?: string;
+  tmuxSession?: string;
+  promptFile?: string;
   status: TaskStatus;
   retryCount: number;
   startedAt: number;
@@ -73,9 +85,9 @@ export interface ZoeConfig {
   worktreeRoot: string;
   mainBranch: string;
   installCommand?: string;
-  allowedAgents: string[];
+  allowedAgents: AgentName[];
   agentLaunchCommands: Record<string, string>;
-  uiAgent?: string;
+  uiAgent?: AgentName;
   reviewerBotLogins: string[];
   requiredApprovals: number;
   uiPathGlobs: string[];

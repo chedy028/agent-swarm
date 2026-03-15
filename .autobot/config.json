@@ -7,11 +7,11 @@
   "agentLaunchCommands": {
     "codex": "codex --model gpt-5.3-codex -c \"model_reasoning_effort=high\" --dangerously-bypass-approvals-and-sandbox \"{prompt}\"",
     "claude": "env ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY\" claude --model opus --dangerously-skip-permissions -p \"{prompt}\"",
-    "gemini": "env GEMINI_API_KEY=\"$GEMINI_API_KEY\" gemini \"{prompt}\""
+    "gemini": "env GEMINI_API_KEY=\"$GEMINI_API_KEY\" gemini --model gemini-3.5-pro --prompt-interactive \"{prompt}\" --yolo"
   },
   "uiAgent": "gemini",
   "reviewerBotLogins": ["codex-reviewer[bot]", "claude-reviewer[bot]", "gemini-reviewer[bot]"],
-  "requiredApprovals": 2,
+  "requiredApprovals": 3,
   "uiPathGlobs": ["src/**/*.tsx", "src/**/*.jsx", "src/**/*.css", "apps/**/src/**/*.tsx", "packages/**/src/**/*.tsx"],
   "criticalTagPattern": "\\[critical\\]",
   "maxRetries": 3,

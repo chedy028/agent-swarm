@@ -51,7 +51,7 @@ interface CheckChildResult {
 }
 
 function isChildTask(task: TaskRecord): boolean {
-  return task.kind === 'child';
+  return task.kind === 'child' || (!task.kind && !!task.agent);
 }
 
 function isParentTask(task: TaskRecord): boolean {
@@ -671,6 +671,7 @@ export async function checkTasks(
   const taskById = new Map(allTasks.map((task) => [task.id, task]));
 
   const selectedParentIds = new Set<string>();
+  const standaloneChildIds = new Set<string>();
   if (taskId) {
     const selected = taskById.get(taskId);
     if (!selected) {
@@ -678,18 +679,48 @@ export async function checkTasks(
     }
     if (isParentTask(selected)) {
       selectedParentIds.add(selected.id);
-    } else if (selected.parentId) {
-      selectedParentIds.add(selected.parentId);
+    } else if (isChildTask(selected)) {
+      if (selected.parentId) {
+        selectedParentIds.add(selected.parentId);
+      } else {
+        standaloneChildIds.add(selected.id);
+      }
     }
   } else {
     for (const parent of parentTasks) {
       selectedParentIds.add(parent.id);
+    }
+    for (const task of allTasks) {
+      if (isChildTask(task) && !task.parentId) {
+        standaloneChildIds.add(task.id);
+      }
     }
   }
 
   const nextById = new Map(allTasks.map((task) => [task.id, { ...task }]));
   const updatedTasks: TaskRecord[] = [];
   const actionableMessages: string[] = [];
+
+  for (const childId of standaloneChildIds) {
+    const child = nextById.get(childId);
+    if (!child || !isChildTask(child)) {
+      continue;
+    }
+
+    const checked = await checkSingleChildTask(config, runner, child);
+    if (!checked.changed) {
+      continue;
+    }
+
+    nextById.set(child.id, checked.task);
+    updatedTasks.push(checked.task);
+
+    if (checked.task.status === 'ready_for_human') {
+      actionableMessages.push(`ready_for_human:${checked.task.id}:pr=${checked.task.pr?.number ?? '-'}`);
+    } else if (checked.task.status === 'blocked') {
+      actionableMessages.push(`attention_required:${checked.task.id}:blocked`);
+    }
+  }
 
   for (const parentId of selectedParentIds) {
     const parent = nextById.get(parentId);
